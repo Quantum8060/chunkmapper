@@ -222,6 +222,7 @@ public class WebServer {
     <div id="info">
         <h3>🗺️ Minecraft 3D Mapper</h3>
         <div class="stat">チャンク数: <span class="stat-value" id="chunkCount">0</span></div>
+        <div class="stat">ブロック数: <span class="stat-value" id="blockCount">0</span></div>
         <div class="stat">次元: <span class="stat-value" id="dimension">-</span></div>
         <div class="stat">FPS: <span class="stat-value" id="fps">0</span></div>
     </div>
@@ -264,13 +265,14 @@ public class WebServer {
     <script>
         let scene, camera, renderer;
         let currentDimension = 'overworld';
-        let chunkMap = new Map();
+        let chunkMeshes = new Map(); // チャンクごとのメッシュグループ
         let lastTime = performance.now();
         let frameCount = 0;
-        let renderQuality = 2; // 1=低, 2=中, 3=高
+        let renderQuality = 2;
         let viewDistance = 300;
         let minHeight = 50;
         let maxHeight = 100;
+        let totalBlockCount = 0;
         
         // ブロックタイプID to 色マッピング
         const blockColors = {
@@ -294,7 +296,17 @@ public class WebServer {
             17: 0x6f5f5f, // mycelium
             18: 0x5c4c2c, // podzol
             19: 0x7a5c3a, // coarse_dirt
-            20: 0xe0c9a0  // sandstone
+            20: 0xe0c9a0, // sandstone
+            21: 0xb8945f, // oak_planks
+            22: 0x4d3a2e, // spruce_log
+            23: 0xd7cb8d, // birch_log
+            24: 0x6f5436, // jungle_log
+            25: 0x2d5a2d, // spruce_leaves
+            26: 0x80a755, // birch_leaves
+            27: 0x22b14c, // jungle_leaves
+            28: 0xc0f0ff, // glass
+            29: 0xeeeeee, // wool
+            30: 0x985542  // terracotta
         };
         
         function init() {
@@ -362,15 +374,19 @@ public class WebServer {
                 }
                 
                 // 既存のチャンクを削除して再描画
-                chunkMap.forEach(mesh => scene.remove(mesh));
-                chunkMap.clear();
+                chunkMeshes.forEach(group => {
+                    group.children.forEach(mesh => group.remove(mesh));
+                    scene.remove(group);
+                });
+                chunkMeshes.clear();
+                totalBlockCount = 0;
                 fetchChunks();
             });
             
             setupControls();
             
             fetchChunks();
-            setInterval(fetchChunks, 3000); // 3秒ごとに更新
+            setInterval(fetchChunks, 3000);
             animate();
         }
         
@@ -440,70 +456,59 @@ public class WebServer {
             
             const filteredData = data.filter(d => d.dimension === currentDimension);
             
-            // 新しいチャンクのみ追加（圧縮データから展開）
             filteredData.forEach(chunkData => {
                 const key = `${chunkData.chunkX}_${chunkData.chunkZ}`;
                 
-                if (!chunkMap.has(key)) {
-                    // チャンク単位でメッシュを作成（インスタンシング使用）
-                    const geometry = new THREE.PlaneGeometry(16, 16, 15, 15);
-                    const vertices = geometry.attributes.position.array;
-                    const colors = new Float32Array(256 * 3);
+                if (!chunkMeshes.has(key)) {
+                    // チャンクごとにグループを作成
+                    const chunkGroup = new THREE.Group();
+                    chunkGroup.position.set(chunkData.chunkX * 16, 0, chunkData.chunkZ * 16);
                     
-                    let visibleVertices = 0;
+                    // インスタンスド・メッシュを使用して効率化
+                    const blocksByType = new Map();
                     
-                    // 高さマップとカラーを設定
-                    for (let i = 0; i < 256; i++) {
-                        const height = chunkData.heightMap[i];
-                        const blockId = chunkData.blockIds[i];
-                        
-                        // 高度フィルタリング
-                        if (height >= minHeight && height <= maxHeight) {
-                            vertices[i * 3 + 2] = height / 10; // Z軸を高さに
-                            
-                            const color = new THREE.Color(blockColors[blockId] || 0x808080);
-                            colors[i * 3] = color.r;
-                            colors[i * 3 + 1] = color.g;
-                            colors[i * 3 + 2] = color.b;
-                            
-                            visibleVertices++;
-                        } else {
-                            // 範囲外のブロックは地下に沈める
-                            vertices[i * 3 + 2] = -1000;
-                            colors[i * 3] = 0;
-                            colors[i * 3 + 1] = 0;
-                            colors[i * 3 + 2] = 0;
+                    // ブロックタイプごとに分類
+                    chunkData.blocks.forEach(block => {
+                        if (block.y >= minHeight && block.y <= maxHeight) {
+                            if (!blocksByType.has(block.type)) {
+                                blocksByType.set(block.type, []);
+                            }
+                            blocksByType.get(block.type).push(block);
                         }
-                    }
-                    
-                    // 表示する頂点がない場合はスキップ
-                    if (visibleVertices === 0) {
-                        return;
-                    }
-                    
-                    geometry.attributes.position.needsUpdate = true;
-                    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-                    
-                    if (renderQuality >= 2) {
-                        geometry.computeVertexNormals();
-                    }
-                    
-                    const material = new THREE.MeshLambertMaterial({
-                        vertexColors: true,
-                        side: THREE.DoubleSide,
-                        flatShading: renderQuality < 3
                     });
                     
-                    const mesh = new THREE.Mesh(geometry, material);
-                    mesh.rotation.x = -Math.PI / 2;
-                    mesh.position.set(chunkData.chunkX * 16, 0, chunkData.chunkZ * 16);
+                    // タイプごとにインスタンスドメッシュを作成
+                    blocksByType.forEach((blocks, type) => {
+                        const geometry = new THREE.BoxGeometry(1, 1, 1);
+                        const material = new THREE.MeshLambertMaterial({
+                            color: blockColors[type] || 0x808080,
+                            flatShading: renderQuality < 3
+                        });
+                        
+                        const instancedMesh = new THREE.InstancedMesh(
+                            geometry,
+                            material,
+                            blocks.length
+                        );
+                        
+                        const matrix = new THREE.Matrix4();
+                        blocks.forEach((block, i) => {
+                            matrix.setPosition(block.x, block.y, block.z);
+                            instancedMesh.setMatrixAt(i, matrix);
+                            totalBlockCount++;
+                        });
+                        
+                        instancedMesh.instanceMatrix.needsUpdate = true;
+                        chunkGroup.add(instancedMesh);
+                    });
                     
-                    scene.add(mesh);
-                    chunkMap.set(key, mesh);
+                    scene.add(chunkGroup);
+                    chunkMeshes.set(key, chunkGroup);
                 }
             });
             
-            document.getElementById('chunkCount').textContent = chunkMap.size.toLocaleString();
+            document.getElementById('chunkCount').textContent = chunkMeshes.size.toLocaleString();
+            document.getElementById('blockCount').textContent = totalBlockCount.toLocaleString();
             document.getElementById('dimension').textContent = currentDimension;
         }
         

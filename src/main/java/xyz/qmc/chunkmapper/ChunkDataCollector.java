@@ -14,14 +14,14 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ChunkDataCollector {
-    private final Map<String, CompressedChunkData> chunkDataMap = new ConcurrentHashMap<>();
+    private final Map<String, CompactChunkData> chunkDataMap = new ConcurrentHashMap<>();
     private final Gson gson = new GsonBuilder().create();
     private int tickCounter = 0;
     private final Set<String> processedChunks = ConcurrentHashMap.newKeySet();
-    private static final int MAX_CHUNKS = 1000; // 最大保持チャンク数
+    private static final int MAX_CHUNKS = 500; // 最大保持チャンク数
 
     public void collectChunkData(MinecraftServer server) {
-        // 40tick(2秒)ごとに更新（負荷軽減）
+        // 40tick(2秒)ごとに更新
         tickCounter++;
         if (tickCounter < 40) {
             return;
@@ -30,7 +30,7 @@ public class ChunkDataCollector {
 
         // メモリ制限チェック
         if (chunkDataMap.size() > MAX_CHUNKS) {
-            ChunkMapperMod.LOGGER.warn("Max chunks reached, skipping new chunks");
+            ChunkMapperMod.LOGGER.warn("Max chunks reached ({}), skipping new chunks", MAX_CHUNKS);
             return;
         }
 
@@ -38,8 +38,8 @@ public class ChunkDataCollector {
             ServerWorld world = player.getServerWorld();
             ChunkPos playerChunkPos = player.getChunkPos();
 
-            // 視界距離を制限（8チャンクまで）
-            int viewDistance = Math.min(8, server.getPlayerManager().getViewDistance());
+            // 視界距離を制限（5チャンクまで）
+            int viewDistance = Math.min(5, server.getPlayerManager().getViewDistance());
 
             // プレイヤーの周囲のチャンクを収集
             for (int x = -viewDistance; x <= viewDistance; x++) {
@@ -55,7 +55,7 @@ public class ChunkDataCollector {
 
                     if (world.isChunkLoaded(chunkPos.x, chunkPos.z)) {
                         WorldChunk chunk = world.getChunk(chunkPos.x, chunkPos.z);
-                        extractCompressedChunkData(chunk, world, chunkPos);
+                        extractCompactChunkData(chunk, world, chunkPos);
                         processedChunks.add(chunkKey);
                     }
                 }
@@ -63,62 +63,84 @@ public class ChunkDataCollector {
         }
     }
 
-    private void extractCompressedChunkData(WorldChunk chunk, ServerWorld world, ChunkPos chunkPos) {
+    private void extractCompactChunkData(WorldChunk chunk, ServerWorld world, ChunkPos chunkPos) {
         String chunkKey = getDimensionName(world) + "_" + chunkPos.x + "_" + chunkPos.z;
 
-        // チャンク単位で圧縮されたデータを作成
-        CompressedChunkData data = new CompressedChunkData();
-        data.chunkX = chunkPos.x;
-        data.chunkZ = chunkPos.z;
-        data.dimension = getDimensionName(world);
-
-        // 16x16のサーフェスマップ
-        data.heightMap = new short[256];
-        data.blockIds = new byte[256];
+        List<BlockInfo> blocks = new ArrayList<>();
 
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                int idx = x * 16 + z;
+                int worldX = chunkPos.getStartX() + x;
+                int worldZ = chunkPos.getStartZ() + z;
 
                 // 地表の高さを取得
                 int surfaceY = chunk.getHeightmap(net.minecraft.world.Heightmap.Type.WORLD_SURFACE).get(x, z);
-                data.heightMap[idx] = (short) surfaceY;
 
-                // 地表のブロックタイプを取得
-                BlockPos pos = new BlockPos(chunkPos.getStartX() + x, surfaceY - 1, chunkPos.getStartZ() + z);
-                BlockState state = chunk.getBlockState(pos);
-                data.blockIds[idx] = getBlockTypeId(state.getBlock().getTranslationKey().replace("block.minecraft.", ""));
+                // Y 51 から地表+3ブロックまでを収集（範囲を狭める）
+                for (int y = 51; y <= Math.min(319, surfaceY + 3); y++) {
+                    BlockPos pos = new BlockPos(worldX, y, worldZ);
+                    BlockState state = chunk.getBlockState(pos);
+
+                    if (state.isAir()) {
+                        continue;
+                    }
+
+                    BlockInfo block = new BlockInfo();
+                    block.x = (byte) x;  // チャンク内相対座標（0-15）
+                    block.y = (short) y;
+                    block.z = (byte) z;  // チャンク内相対座標（0-15）
+                    block.type = getBlockTypeId(state.getBlock().getTranslationKey().replace("block.minecraft.", ""));
+
+                    blocks.add(block);
+                }
             }
         }
+
+        // ブロックが1つもない場合はスキップ
+        if (blocks.isEmpty()) {
+            return;
+        }
+
+        CompactChunkData data = new CompactChunkData();
+        data.chunkX = chunkPos.x;
+        data.chunkZ = chunkPos.z;
+        data.dimension = getDimensionName(world);
+        data.blocks = blocks;
 
         chunkDataMap.put(chunkKey, data);
     }
 
-    // ブロックタイプを数値IDに変換（メモリ節約）
+    // ブロックタイプを数値IDに変換
     private byte getBlockTypeId(String blockId) {
-        switch (blockId) {
-            case "grass_block": return 1;
-            case "dirt": return 2;
-            case "stone": return 3;
-            case "sand": return 4;
-            case "water": return 5;
-            case "oak_log": return 6;
-            case "oak_leaves": return 7;
-            case "snow": return 8;
-            case "ice": return 9;
-            case "netherrack": return 10;
-            case "end_stone": return 11;
-            case "gravel": return 12;
-            case "cobblestone": return 13;
-            case "bedrock": return 14;
-            case "clay": return 15;
-            case "soul_sand": return 16;
-            case "mycelium": return 17;
-            case "podzol": return 18;
-            case "coarse_dirt": return 19;
-            case "sandstone": return 20;
-            default: return 0;
-        }
+        return switch (blockId) {
+            case "grass_block" -> 1;
+            case "dirt" -> 2;
+            case "stone" -> 3;
+            case "sand" -> 4;
+            case "water" -> 5;
+            case "oak_log" -> 6;
+            case "oak_leaves" -> 7;
+            case "snow" -> 8;
+            case "ice" -> 9;
+            case "netherrack" -> 10;
+            case "end_stone" -> 11;
+            case "gravel" -> 12;
+            case "cobblestone" -> 13;
+            case "bedrock" -> 14;
+            case "clay" -> 15;
+            case "soul_sand" -> 16;
+            case "oak_planks" -> 21;
+            case "spruce_log" -> 22;
+            case "birch_log" -> 23;
+            case "jungle_log" -> 24;
+            case "spruce_leaves" -> 25;
+            case "birch_leaves" -> 26;
+            case "jungle_leaves" -> 27;
+            case "glass" -> 28;
+            case "white_wool" -> 29;
+            case "terracotta" -> 30;
+            default -> 0;
+        };
     }
 
     private String getDimensionName(ServerWorld world) {
@@ -137,11 +159,17 @@ public class ChunkDataCollector {
         return chunkDataMap.size();
     }
 
-    public static class CompressedChunkData {
+    public static class CompactChunkData {
         public int chunkX;
         public int chunkZ;
         public String dimension;
-        public short[] heightMap; // 16x16 = 256 shorts
-        public byte[] blockIds;    // 16x16 = 256 bytes
+        public List<BlockInfo> blocks;
+    }
+
+    public static class BlockInfo {
+        public byte x;    // 0-15 (チャンク内相対座標)
+        public short y;   // ワールド座標
+        public byte z;    // 0-15 (チャンク内相対座標)
+        public byte type; // ブロックタイプID
     }
 }
