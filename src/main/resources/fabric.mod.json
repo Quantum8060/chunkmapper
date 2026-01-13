@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "chunkmapper",
+  "version": "1.0.0",
+  "name": "Chunk Mapper",
+  "description": "3D chunk mapping viewer for Minecraft",
+  "authors": [
+    "Your Name"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/chunkmappermod/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.example.chunkmapper.ChunkMapperMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.14.0",
+    "fabric": "*",
+    "minecraft": "1.20.1"
+  }
+}
