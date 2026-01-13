@@ -1,4 +1,4 @@
-package com.example.chunkmapper;
+package xyz.qmc.chunkmapper;
 
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;

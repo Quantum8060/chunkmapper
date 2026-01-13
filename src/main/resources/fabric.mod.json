@@ -13,7 +13,7 @@
   "environment": "*",
   "entrypoints": {
     "main": [
-      "com.example.chunkmapper.ChunkMapperMod"
+      "xyz.qmc.chunkmapper.ChunkMapperMod"
     ]
   },
   "depends": {

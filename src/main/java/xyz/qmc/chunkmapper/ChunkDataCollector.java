@@ -1,4 +1,4 @@
-package com.example.chunkmapper;
+package xyz.qmc.chunkmapper;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.server.MinecraftServer;
